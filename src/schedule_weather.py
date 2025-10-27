@@ -26,7 +26,6 @@ def generate_activity_list(act_df):
     for _, row in act_df.iterrows():
         preds = [] if pd.isna(row["Predecessor ID(s)"]) or row["Predecessor ID(s)"] == "-" else str(row["Predecessor ID(s)"]).split(",")
         succs = [] if pd.isna(row.get("Successor ID(s)", "-")) or row.get("Successor ID(s)", "-") == "-" else str(row["Successor ID(s)"]).split(",")
-
         act_list.append(Activity(
             row["ID"],
             row["Sub Activity"],
@@ -38,16 +37,18 @@ def generate_activity_list(act_df):
             row.get("Min Tidal Level (mCD)", None)
         ))
     return act_list
-
 # Check if weather conditions are acceptable
 def is_weather_ok(activity, timestamp, weather_data):
-    data = weather_data.get(timestamp, {})
-    current_ok = activity.max_tidal_current is None or data.get("tidal_current", 0) <= activity.max_tidal_current
-    level_ok = activity.min_tidal_level is None or data.get("tidal_level", 0) >= activity.min_tidal_level
+    row = weather_data[weather_data['datetime'] == timestamp]
+    if row.empty:
+        return False
+    data = row.iloc[0]
+    current_ok = activity.max_tidal_current is None or data['tidal_current'] <= activity.max_tidal_current
+    level_ok = activity.min_tidal_level is None or data['tidal_level'] >= activity.min_tidal_level
     return current_ok and level_ok
 
 # Schedule activities with weather constraints
-def schedule_activities(activities, weather_data=None, analysis_interval=1.0, start_datetime=None):
+def schedule_activities(activities, weather_data=None, analysis_interval=1.0, start_datetime=None, run_critical_path=True):
     if start_datetime is None:
         start_datetime = datetime.now()
 
@@ -68,7 +69,7 @@ def schedule_activities(activities, weather_data=None, analysis_interval=1.0, st
             start_time = max_end
 
         # Delay until weather is OK
-        if weather_data:
+        if weather_data is not None:
             while not is_weather_ok(activity, start_time, weather_data):
                 start_time += timedelta(hours=analysis_interval)
 
@@ -78,8 +79,16 @@ def schedule_activities(activities, weather_data=None, analysis_interval=1.0, st
     for activity in activities:
         compute_times(activity)
 
-    # Backward pass
+    if run_critical_path:
+        activities = estimate_critical_path(activities)
+
+    return activities
+
+# Optional backward pass and critical path analysis
+def estimate_critical_path(activities):
+    activity_map = {act.id: act for act in activities}
     project_end = max(act.end for act in activities)
+
     for act in activities:
         act.latest_end = project_end
         act.latest_start = act.latest_end - timedelta(hours=act.duration)
@@ -91,15 +100,10 @@ def schedule_activities(activities, weather_data=None, analysis_interval=1.0, st
                 pred.latest_end = min(pred.latest_end, act.latest_start)
                 pred.latest_start = pred.latest_end - timedelta(hours=pred.duration)
 
-    # Critical path analysis
-    activities = estimate_critical_path(activities)
-    return activities
-
-# Separate function for critical path estimation
-def estimate_critical_path(activities):
     for act in activities:
         act.slack = (act.latest_start - act.start).total_seconds() / 3600
         act.is_critical = act.slack == 0
+
     return activities
 
 # Convert scheduled activities to DataFrame
