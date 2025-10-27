@@ -7,7 +7,7 @@ WeatherOpsPlanner is a Python-based logistics and scheduling engine designed for
 1. Install VS Code
 2. Install the extensions in GitHub called GitHub Pull Requests and GitHub Repositories
 3. Make sure git is intallled, use `pip install git` in terminal. (note may be already installed - check with `git --version`)
-5. Configure who you are in terminal. `git config --global user.email "YOUR.NAME@arup.com"` and `git config --global user.name "YOUR NAME"`
+5. Configure who you are in terminal. `git config --global user.email "YOUR.NAME@email.com"` and `git config --global user.name "YOUR NAME"`
 6. Clone repository `git clone https://github.com/YOUR-REPOSITORY-NAME.git` in terminal note this will create folder for repository in terminal directory. You may want to use `cd YOURPATH` to save in an alternative location. *You can copy the HTTPs URL for cloning any repo on GitHub by click green "Code" button*
 7. Use the source control `CTRL+SHIFT+G` to push and pull from GitHub.
 8. .gitignore: this file stops some files being tracked by GitHub such as virtual environments.
