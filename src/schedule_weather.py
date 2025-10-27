@@ -1,5 +1,7 @@
 import pandas as pd
+from datetime import datetime, timedelta
 
+# Activity class definition
 class Activity:
     def __init__(self, id, description, predecessors, successors, duration, group,
                  max_tidal_current=None, min_tidal_level=None):
@@ -15,10 +17,10 @@ class Activity:
         self.end = None
         self.latest_start = None
         self.latest_end = None
-
+        self.slack = None
         self.is_critical = False
 
-
+# Generate activity list from DataFrame
 def generate_activity_list(act_df):
     act_list = []
     for _, row in act_df.iterrows():
@@ -37,27 +39,27 @@ def generate_activity_list(act_df):
         ))
     return act_list
 
-
-def is_weather_ok(activity, time_index, weather_data):
-    data = weather_data.get(time_index, {})
+# Check if weather conditions are acceptable
+def is_weather_ok(activity, timestamp, weather_data):
+    data = weather_data.get(timestamp, {})
     current_ok = activity.max_tidal_current is None or data.get("tidal_current", 0) <= activity.max_tidal_current
     level_ok = activity.min_tidal_level is None or data.get("tidal_level", 0) >= activity.min_tidal_level
     return current_ok and level_ok
 
+# Schedule activities with weather constraints
+def schedule_activities(activities, weather_data=None, analysis_interval=1.0, start_datetime=None):
+    if start_datetime is None:
+        start_datetime = datetime.now()
 
-def schedule_activities(activities, weather_data=None, analysis_interval=1.0):
-    """
-    analysis_interval: time step in hours (e.g., 1.0 = hourly, 0.5 = half-hourly, 0.1667 = 10 min)
-    """
     activity_map = {act.id: act for act in activities}
 
     def compute_times(activity):
         if activity.start is not None:
             return
         if not activity.predecessors:
-            start_time = 0.0
+            start_time = start_datetime
         else:
-            max_end = 0.0
+            max_end = start_datetime
             for pred_id in activity.predecessors:
                 pred = activity_map.get(pred_id)
                 if pred:
@@ -67,11 +69,11 @@ def schedule_activities(activities, weather_data=None, analysis_interval=1.0):
 
         # Delay until weather is OK
         if weather_data:
-            while not is_weather_ok(activity, round(start_time / analysis_interval), weather_data):
-                start_time += analysis_interval
+            while not is_weather_ok(activity, start_time, weather_data):
+                start_time += timedelta(hours=analysis_interval)
 
         activity.start = start_time
-        activity.end = activity.start + activity.duration
+        activity.end = activity.start + timedelta(hours=activity.duration)
 
     for activity in activities:
         compute_times(activity)
@@ -80,30 +82,34 @@ def schedule_activities(activities, weather_data=None, analysis_interval=1.0):
     project_end = max(act.end for act in activities)
     for act in activities:
         act.latest_end = project_end
-        act.latest_start = act.latest_end - act.duration
+        act.latest_start = act.latest_end - timedelta(hours=act.duration)
 
     for act in reversed(activities):
         for pred_id in act.predecessors:
             pred = activity_map.get(pred_id)
             if pred:
                 pred.latest_end = min(pred.latest_end, act.latest_start)
-                pred.latest_start = pred.latest_end - pred.duration
+                pred.latest_start = pred.latest_end - timedelta(hours=pred.duration)
 
-    # Slack and critical path
-    for act in activities:
-        act.slack = act.latest_start - act.start
-        act.is_critical = act.slack == 0
-
+    # Critical path analysis
+    activities = estimate_critical_path(activities)
     return activities
 
+# Separate function for critical path estimation
+def estimate_critical_path(activities):
+    for act in activities:
+        act.slack = (act.latest_start - act.start).total_seconds() / 3600
+        act.is_critical = act.slack == 0
+    return activities
 
+# Convert scheduled activities to DataFrame
 def scheduled_df(scheduled_activities):
     return pd.DataFrame([{
         "ID": act.id,
         "Description": act.description,
         "Duration (hours)": act.duration,
-        "Start (hours)": act.start,
-        "End (hours)": act.end,
+        "Start": act.start,
+        "End": act.end,
         "Group": act.group,
         "Predecessor IDs": act.predecessors,
         "Max Tidal Current (m/s)": act.max_tidal_current,
@@ -111,9 +117,9 @@ def scheduled_df(scheduled_activities):
         "Critical": act.is_critical
     } for act in scheduled_activities])
 
-
+# Shift schedule so a reference activity starts at zero
 def shift_start_end(schedule_df, zero_hour_activity="Punch out of pilot"):
-    zero_hour = schedule_df.loc[schedule_df['Description'] == zero_hour_activity, 'Start (hours)'].values[0]
-    schedule_df['Start (hours)'] -= zero_hour
-    schedule_df['End (hours)'] -= zero_hour
+    zero_time = schedule_df.loc[schedule_df['Description'] == zero_hour_activity, 'Start'].values[0]
+    schedule_df['Start'] = pd.to_datetime(schedule_df['Start']) - pd.to_datetime(zero_time)
+    schedule_df['End'] = pd.to_datetime(schedule_df['End']) - pd.to_datetime(zero_time)
     return schedule_df
