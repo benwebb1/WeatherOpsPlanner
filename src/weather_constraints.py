@@ -9,19 +9,25 @@ def get_daylight_windows(start_date, end_date, plot=False, save_csv=None):
     sizewell = LocationInfo("Sizewell", "England", "Europe/London", 52.198, 1.604)
     daylight_windows = []
     records = []
-    current_date = start_date
 
-    while current_date <= end_date:
-        s = sun(sizewell.observer, date=current_date, tzinfo=sizewell.timezone)
-        sunrise = s['sunrise']
-        sunset = s['sunset']
+    # Normalize inputs to dates and iterate using pandas date_range (inclusive)
+    start_dt = pd.to_datetime(start_date).date()
+    end_dt = pd.to_datetime(end_date).date()
+    dates = pd.date_range(start=start_dt, end=end_dt, freq='D')
+
+    for d in dates:
+        # astral.sun expects a date object; keep timezone by converting results to pd.Timestamp
+        s = sun(sizewell.observer, date=d.date(), tzinfo=sizewell.timezone)
+        sunrise = pd.Timestamp(s['sunrise'])
+        sunset = pd.Timestamp(s['sunset'])
         daylight_windows.append((sunrise, sunset))
-        records.append({'Date': current_date.date(), 'Sunrise': sunrise, 'Sunset': sunset})
-        current_date += timedelta(days=1)
+        records.append({'Date': d.date(), 'Sunrise': sunrise, 'Sunset': sunset})
 
     if save_csv:
         df = pd.DataFrame(records)
         df.to_csv(save_csv, index=False)
+    
+    daylight_windows = [(start.tz_localize(None), end.tz_localize(None)) for start, end in daylight_windows]
 
     return daylight_windows
 
@@ -97,4 +103,4 @@ def get_tide_windows(tidaldata_path,start_date=None,end_date=None,skiprows=2,dat
     if save_csv:
         events.to_csv(save_csv, index=False)
 
-    return hw_windows, lw_windows
+    return hw_windows, lw_windows, events

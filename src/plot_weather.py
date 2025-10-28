@@ -75,7 +75,7 @@ def plot_weather(schedule_df, daylight_windows, tide_df, tide_windows_df):
             line=dict(color=bar_color, width=10),
             name=row['Group'],
             showlegend=False,
-            customdata=[[row['ID'], row['Duration (hours)'], row['Description'], row['Predecessor IDs'], row['Group'], row['Start'], row['End'], tide_constraint]] * 2,
+            customdata=[[row['ID'], row['Duration'], row['Description'], row['Predecessor IDs'], row['Group'], row['Start'], row['End'], tide_constraint]] * 2,
             hovertemplate=(
                 "ID: %{customdata[0]}<br>" +
                 "Description: %{customdata[2]}<br>" +
@@ -122,7 +122,7 @@ def plot_weather(schedule_df, daylight_windows, tide_df, tide_windows_df):
         fig.add_annotation(
             x=row['End'],
             y=row['ID'],
-            text=str(row['ID']),
+            text=str(row['Name']),
             showarrow=False,
             font=dict(color=text_color, size=14),
             xanchor='left',
