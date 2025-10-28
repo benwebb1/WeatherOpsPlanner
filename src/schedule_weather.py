@@ -78,7 +78,7 @@ class Scheduler:
         """
         end_time = start_time + timedelta(hours=activity.duration)
 
-        # Weather constraints
+        # Weather constraints - not yet used as no weather data is provided
         if self.weather_data is not None:
             window = self.weather_data[
                 (self.weather_data['datetime'] >= start_time) &
@@ -110,52 +110,63 @@ class Scheduler:
         # Tide constraint
         tide_req = activity.constraints.get('tide_window_required', False)
         if tide_req:
-            if tide_req == 'SlackHW':
+            if tide_req == 'slackhw':
                 if not self.check_time_window(self.tide_windows['HW'], start_time, activity.duration):
                     return False
-            elif tide_req == 'Slack':
+            elif tide_req == 'slack':
                 combined_windows = self.tide_windows['HW'] + self.tide_windows['LW']
                 if not self.check_time_window(combined_windows, start_time, activity.duration):
                     return False
 
         return True
 
+    
     def find_next_valid_start(self, activity, candidate_start):
         """
         Finds earliest start time >= candidate_start satisfying constraints.
+        If both daylight and tide constraints are required, the activity is only scheduled when:
+        - Its center aligns with the center of a tide window
+        - The entire activity fits within a daylight window
         """
-        while not self.check_constraints(activity, candidate_start):
-            next_times = []
+        tide_req = activity.constraints.get('tide_window_required', False)
+        daylight_req = activity.constraints.get('daylight_required', False)
 
-            tide_req = activity.constraints.get('tide_window_required', False)
+        while not self.check_constraints(activity, candidate_start):
             if tide_req:
                 windows = []
-                if tide_req == 'SlackHW':
+                if tide_req.lower() == 'slackhw':
                     windows = self.tide_windows['HW']
-                elif tide_req == 'Slack':
+                elif tide_req.lower() == 'slack':
                     windows = self.tide_windows['HW'] + self.tide_windows['LW']
 
                 for window_start, window_end in windows:
-                    window_duration = (window_end - window_start).total_seconds() / 3600
                     if window_start >= candidate_start:
-                        if activity.duration > window_duration:
-                            center = window_start + (window_end - window_start) / 2
-                            activity.tide_window_mismatch = True
-                            return center - timedelta(hours=activity.duration / 2)
+                        center = window_start + (window_end - window_start) / 2
+                        proposed_start = center - timedelta(hours=activity.duration / 2)
+                        proposed_end = proposed_start + timedelta(hours=activity.duration)
+
+                        # Check if proposed time fits within a daylight window
+                        if daylight_req:
+                            for dl_start, dl_end in self.daylight_windows:
+                                if dl_start <= proposed_start and dl_end >= proposed_end:
+                                    activity.tide_window_mismatch = False
+                                    return proposed_start
                         else:
-                            return window_start
+                            activity.tide_window_mismatch = False
+                            return proposed_start
 
-            if activity.constraints.get('daylight_required', False):
-                next_daylights = [dw[0] for dw in self.daylight_windows if dw[0] >= candidate_start]
-                if next_daylights:
-                    next_times.append(min(next_daylights))
+            # If only daylight is required and no tide constraint matched
+            if daylight_req:
+                for dl_start, dl_end in self.daylight_windows:
+                    if dl_start >= candidate_start:
+                        if (dl_end - dl_start).total_seconds() / 3600 >= activity.duration:
+                            return dl_start
 
-            if next_times:
-                candidate_start = min(next_times)
-            else:
-                candidate_start += timedelta(minutes=1)
+            # If no valid time found, increment candidate_start
+            candidate_start += timedelta(minutes=1)
 
         return candidate_start
+
 
     def compute_start_end(self, activity):
         """
