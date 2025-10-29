@@ -5,7 +5,6 @@ import plotly.io as pio
 import ast
 
 def plot_weather(schedule_df, daylight_windows, tide_df, tide_windows_df):
-    # Assign a color to each group
     group_colors = {
         "Excavator": "#800080",
         "Deck hands": "#808080",
@@ -20,16 +19,14 @@ def plot_weather(schedule_df, daylight_windows, tide_df, tide_windows_df):
 
     schedule_df['Color'] = schedule_df['Group'].map(group_colors)
 
-    # Create subplots with shared x-axis
     fig = make_subplots(
         rows=2, cols=1,
         shared_xaxes=True,
-        row_heights=[0.2, 0.8],
+        row_heights=[0.15, 0.8],
         vertical_spacing=0.05,
         subplot_titles=("Tide Height", "Pipe Pull Operation Schedule")
     )
 
-    # Add tide data to the first subplot
     fig.add_trace(go.Scatter(
         x=tide_df['DateTime'],
         y=tide_df['Height'],
@@ -39,15 +36,8 @@ def plot_weather(schedule_df, daylight_windows, tide_df, tide_windows_df):
         hovertemplate="Time: %{x}<br>Tide Height: %{y:.2f} m<extra></extra>"
     ), row=1, col=1)
 
-    # Add shaded regions for tide windows in the tide plot
     for _, row in tide_windows_df.iterrows():
-        if row['Type'] == 'HW':
-            fillcolor = "lightgreen"
-        elif row['Type'] == 'LW':
-            fillcolor = "lightblue"
-        else:
-            fillcolor = "gray"
-
+        fillcolor = "lightgreen" if row['Type'] == 'HW' else "lightblue" if row['Type'] == 'LW' else "gray"
         fig.add_vrect(
             x0=row['Slack Start'], x1=row['Slack End'],
             fillcolor=fillcolor, opacity=0.3,
@@ -56,17 +46,15 @@ def plot_weather(schedule_df, daylight_windows, tide_df, tide_windows_df):
             row=1, col=1
         )
 
-    # Add each task as a separate bar using Scatter
     for _, row in schedule_df.iterrows():
         bar_color = row['Color']
-
-        # Parse the Constraints column as dictionary
         try:
             constraints = ast.literal_eval(row['Constraints']) if isinstance(row['Constraints'], str) else row['Constraints']
         except Exception:
             constraints = {}
 
-        tide_constraint = constraints.get('tide_window_required', False)
+        tide_req = constraints.get('tide_window_required', False)
+        daylight_req = constraints.get('daylight_required', False)
 
         fig.add_trace(go.Scatter(
             x=[row['Start'], row['End']],
@@ -75,7 +63,7 @@ def plot_weather(schedule_df, daylight_windows, tide_df, tide_windows_df):
             line=dict(color=bar_color, width=10),
             name=row['Group'],
             showlegend=False,
-            customdata=[[row['ID'], row['Duration'], row['Description'], row['Predecessor IDs'], row['Group'], row['Start'], row['End'], tide_constraint]] * 2,
+            customdata=[[row['ID'], row['Duration'], row['Description'], row['Predecessor IDs'], row['Group'], row['Start'], row['End'], tide_req]] * 2,
             hovertemplate=(
                 "ID: %{customdata[0]}<br>" +
                 "Description: %{customdata[2]}<br>" +
@@ -88,18 +76,15 @@ def plot_weather(schedule_df, daylight_windows, tide_df, tide_windows_df):
             )
         ), row=2, col=1)
 
-    # Add dummy traces for legend
     for group, color in group_colors.items():
         fig.add_trace(go.Scatter(
-            x=[None],
-            y=[None],
+            x=[None], y=[None],
             mode='lines',
             line=dict(color=color, width=10),
             name=group,
             showlegend=True
         ), row=2, col=1)
 
-    # Add shaded regions for daylight windows
     for start, end in daylight_windows:
         fig.add_vrect(
             x0=start, x1=end,
@@ -109,34 +94,58 @@ def plot_weather(schedule_df, daylight_windows, tide_df, tide_windows_df):
             row=2, col=1
         )
 
-    # Add annotations for task IDs with blue text if tide_window_required is not False
+    # Add annotations with color logic
     for _, row in schedule_df.iterrows():
         try:
             constraints = ast.literal_eval(row['Constraints']) if isinstance(row['Constraints'], str) else row['Constraints']
         except Exception:
             constraints = {}
 
-        tide_constraint = constraints.get('tide_window_required', False)
-        text_color = 'blue' if tide_constraint not in [False, None, '', 'No'] else 'black'
+        tide_req = constraints.get('tide_window_required', False)
+        daylight_req = constraints.get('daylight_required', False)
+
+        if tide_req and daylight_req:
+            font = dict(color='red', size=14, family='Arial Black')
+        elif tide_req:
+            font = dict(color='blue', size=14, family='Arial Black')
+        elif daylight_req:
+            font = dict(color='orange', size=14, family='Arial Black')
+        else:
+            font = dict(color='black', size=14)
 
         fig.add_annotation(
             x=row['End'],
             y=row['ID'],
             text=str(row['Name']),
             showarrow=False,
-            font=dict(color=text_color, size=14),
+            font=font,
             xanchor='left',
             yanchor='middle',
             align='left',
             row=2, col=1
         )
 
-    # Set default x-axis range
+    # Add custom legend for constraint colors
+    constraint_legend = {
+        "Tide Window Required": "blue",
+        "Daylight Required": "orange",
+        "Both Required": "red"
+    }
+
+    for label, color in constraint_legend.items():
+        fig.add_trace(go.Scatter(
+            x=[None], y=[None],
+            mode='text',
+            text=[label],
+            textfont=dict(color=color, size=14, family='Arial Black'),
+            name=label,
+            showlegend=True
+        ), row=2, col=1)
+
     x_start = min(schedule_df['Start'])
     x_end = max(schedule_df['End'])
-    fig.update_xaxes(range=[x_start, x_end+(x_end - x_start)*0.05])
+    fig.update_xaxes(range=[x_start, x_end + (x_end - x_start) * 0.05])
 
-    # Update layout with increased height
     fig.update_layout(
         height=1200,
         title='Pipe Pull Operation Schedule with Tide Data',
@@ -144,7 +153,7 @@ def plot_weather(schedule_df, daylight_windows, tide_df, tide_windows_df):
         yaxis_title='Tide Height (m)',
         yaxis2_title='Task ID',
         yaxis2=dict(autorange='reversed'),
-        legend_title='Group'
+        legend_title='Group & Constraints'
     )
 
     pio.renderers.default = 'browser'
