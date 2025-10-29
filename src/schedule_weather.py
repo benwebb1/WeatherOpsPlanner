@@ -1,8 +1,12 @@
 import pandas as pd
 from datetime import datetime, timedelta
 
+# --- Classes ---
 class Activity:
-    def __init__(self, id, name, description, predecessors, duration, group, constraints=None):
+    def __init__(
+        self, id, name, description, predecessors, duration, group,
+        constraints=None, weather_restrictions=None
+    ):
         self.id = id
         self.name = name
         self.description = description
@@ -10,12 +14,14 @@ class Activity:
         self.duration = duration
         self.group = group
         self.constraints = constraints or {}
+        self.weather_restrictions = weather_restrictions or {}  # NEW
         self.start = None
         self.end = None
         self.successors = []
         self.earliest_start = None
         self.latest_end = None
         self.float = None
+        self.duration_reference = None  # For 'until ID' durations
 
 class Scheduler:
     def __init__(self, activities, daylight_windows=None, hw_tide_windows=None, lw_tide_windows=None):
@@ -99,15 +105,31 @@ class Scheduler:
                     self.compute_start_end_forward(pred)
             earliest_start = max(self.activity_map[pred_id].end for pred_id in activity.predecessors)
         else:
-            earliest_start = activity.start if activity.start else datetime.min
+            earliest_start = activity.start if activity.start else datetime(2025, 10, 29, 8, 0)  # Default project start
         activity.earliest_start = earliest_start
-        activity.start = self.find_aligned_start(activity, earliest_start)
-        activity.end = activity.start + timedelta(hours=activity.duration)
+
+        # --- Updated logic for 'until ID' durations ---
+        if activity.duration_reference:
+            ref_act = self.activity_map.get(activity.duration_reference)
+            if ref_act and ref_act.start is None:
+                self.compute_start_end_forward(ref_act)
+            activity.start = self.find_aligned_start(activity, earliest_start)
+            # Ensure activity ends strictly before the referenced activity's start
+            activity.end = ref_act.start
+            if activity.end > activity.start:
+                activity.duration = (activity.end - activity.start).total_seconds() / 3600
+            else:
+                raise ValueError(f"Activity {activity.id} ('{activity.name}') cannot end after or at the same time as its reference activity {ref_act.id}.")
+            activity.float = 0  # No float for 'until ID' activities
+        else:
+            activity.start = self.find_aligned_start(activity, earliest_start)
+            activity.end = activity.start + timedelta(hours=activity.duration)
+            # Float will be calculated later
+
         activity.start = activity.start.replace(second=0, microsecond=0)
         activity.end = activity.end.replace(second=0, microsecond=0)
 
     def compute_start_end_latest(self, activity, latest_end=None):
-        # If latest_end is not provided, infer it from successors or use project end
         if latest_end is None:
             successor_starts = [
                 self.activity_map[succ_id].start
@@ -117,12 +139,11 @@ class Scheduler:
             if successor_starts:
                 latest_end = min(successor_starts)
             else:
-                # Use the latest scheduled end among all activities as the project end
                 scheduled_ends = [a.end for a in self.activities if a.end is not None]
                 if scheduled_ends:
                     latest_end = max(scheduled_ends)
                 else:
-                    latest_end = datetime.now()  # fallback if nothing is scheduled yet
+                    latest_end = datetime.now()
         activity.latest_end = latest_end
         activity.start = self.find_latest_aligned_start(activity, latest_end)
         activity.end = activity.start + timedelta(hours=activity.duration)
@@ -172,20 +193,18 @@ class Scheduler:
             succ = self.activity_map[succ_id]
             schedule_chain_forward(succ)
 
-        # Forward pass for all unscheduled activities
         for act in self.activities:
             if act.start is None or act.end is None:
                 self.compute_start_end_forward(act)
-
-        # Backward pass for all activities to set latest_end correctly
         for act in self.activities:
             if act.latest_end is None:
                 self.compute_start_end_latest(act)
-
-        # Calculate float
         for act in self.activities:
-            if act.earliest_start and act.latest_end:
+            # Only calculate float for non-'until ID' activities
+            if act.earliest_start and act.latest_end and not act.duration_reference:
                 act.float = (act.latest_end - act.earliest_start).total_seconds() / 3600 - act.duration
+            elif act.duration_reference:
+                act.float = 0
 
         return self.activities
 
@@ -221,24 +240,39 @@ class Scheduler:
             "Predecessor IDs": ", ".join(a.predecessors),
             "Successor IDs": ", ".join(a.successors),
             "Constraints": a.constraints,
+            "Weather Restrictions": a.weather_restrictions,  # NEW
             "Earliest Start": a.earliest_start,
             "Latest End": a.latest_end,
             "Float (hours)": a.float
         } for a in self.activities])
 
+
 def generate_activity_list(act_df, constraints_df):
+    # List of weather-related columns to extract
+    weather_cols = [
+        "Maximum Wind Speed at 10m (m/s)",
+        "Maximum Significant Wave Height, Hs (m)",
+        "Maximum Wave Period (s)",
+        "Maximum Tidal Current (knots)",
+        "Minimum Tidal Level (mOD)",
+        "Visibility (nm)"
+    ]
     constraints_map = {}
     for _, row in constraints_df.iterrows():
         cid = row.get("Constraint_ID")
         if pd.isna(cid):
             continue
         cdict = {}
+        # Existing logic for daylight/tide
         for col in row.index:
             val = row[col]
             if "Daylight" in col:
                 cdict["daylight_required"] = bool(str(val).strip().lower() in ["yes", "y", "true", "1"])
             elif "Tidal Window" in col:
                 cdict["tide_window_required"] = str(val).strip().lower() if str(val).strip().lower() in ["slack", "slackhw"] else False
+        # Extract weather restrictions as a separate dictionary
+        weather_restrictions = {col: row.get(col) for col in weather_cols if col in row and pd.notna(row.get(col))}
+        cdict["weather_restrictions"] = weather_restrictions
         constraints_map[cid] = cdict
 
     activities = []
@@ -246,16 +280,31 @@ def generate_activity_list(act_df, constraints_df):
         preds = []
         pred_str = row.get("Predecessor ID(s)", "")
         if pd.notna(pred_str) and pred_str != "-":
-            preds = [p.strip() for p in pred_str.split(",")]
+            preds = [p.strip() for p in str(pred_str).split(",") if p.strip()]
         cid = row.get("Constraint_ID")
         constraints = constraints_map.get(cid, {})
-        activities.append(Activity(
+        weather_restrictions = constraints.get("weather_restrictions", {})
+        duration_raw = str(row["Duration (hours)"]).strip()
+        duration = None
+        duration_reference = None
+        if duration_raw.lower().startswith("until"):
+            duration_reference = duration_raw.split("until")[-1].strip()
+            duration = 0  # placeholder, will be computed later
+        else:
+            try:
+                duration = float(duration_raw)
+            except Exception:
+                duration = 0
+        act = Activity(
             id=row["ID"],
             name=row["Name"],
             description=row.get("Sub Activity", ""),
             predecessors=preds,
-            duration=row["Duration (hours)"],
+            duration=duration,
             group=row["Group"],
-            constraints=constraints
-        ))
+            constraints=constraints,
+            weather_restrictions=weather_restrictions,  # Pass weather restrictions here
+        )
+        act.duration_reference = duration_reference
+        activities.append(act)
     return activities
